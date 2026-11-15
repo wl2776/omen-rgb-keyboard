@@ -537,10 +537,14 @@ static bool fan_in_performance(void)
 	return sysfs_streq(thermal_profile_name, "performance");
 }
 
+static bool fan_curve_hw_supported(void)
+{
+	return fan_iface == OMEN_FAN_IF_VICTUS_S && fan_tbl_valid;
+}
+
 static bool fan_curve_can_override(void)
 {
-	return fan_iface == OMEN_FAN_IF_VICTUS_S && fan_tbl_valid &&
-	       cpu_curve.npoints >= 2;
+	return fan_curve_hw_supported() && cpu_curve.npoints >= 2;
 }
 
 /* No saved GPU curve: the GPU fan uses the CPU curve's speed byte. */
@@ -554,8 +558,6 @@ static bool fan_worker_needed_locked(void)
 	if (max_fan_manual)
 		return false;
 	if (curve_enabled && fan_curve_can_override())
-		return true;
-	if (fan_in_performance())
 		return true;
 	if (max_fan_auto)
 		return true;
@@ -1856,6 +1858,9 @@ static ssize_t fan_curve_store(struct device *dev,
 	return -ENODEV;
 #endif
 
+	if (!fan_curve_hw_supported())
+		return -EOPNOTSUPP;
+
 	if (fan_curve_parse_points(buf, count, fan_curve_learned_for(false),
 				   temps, pcts, &npt))
 		return -EINVAL;
@@ -1864,7 +1869,7 @@ static ssize_t fan_curve_store(struct device *dev,
 	fan_curve_commit(&cpu_curve, temps, pcts, npt);
 	curve_enabled = true;
 
-	if (max_fan_manual || !fan_curve_can_override()) {
+	if (max_fan_manual) {
 		mutex_unlock(&fan_lock);
 		fan_persist_save();
 		return count;
@@ -1912,11 +1917,11 @@ static ssize_t fan_curve_enable_store(struct device *dev,
 #endif
 
 	mutex_lock(&fan_lock);
-	if (!cpu_curve.user_saved || cpu_curve.npoints < 2) {
+	if (!fan_curve_hw_supported()) {
 		mutex_unlock(&fan_lock);
-		return -EINVAL;
+		return -EOPNOTSUPP;
 	}
-	if (!fan_curve_can_override()) {
+	if (!cpu_curve.user_saved || cpu_curve.npoints < 2) {
 		mutex_unlock(&fan_lock);
 		return -EINVAL;
 	}
@@ -2031,13 +2036,16 @@ static ssize_t gpu_fan_curve_store(struct device *dev,
 	return -ENODEV;
 #endif
 
+	if (!fan_curve_hw_supported())
+		return -EOPNOTSUPP;
+
 	if (fan_curve_parse_points(buf, count, fan_curve_learned_for(true),
 				   temps, pcts, &npt))
 		return -EINVAL;
 
 	mutex_lock(&fan_lock);
 	fan_curve_commit(&gpu_curve, temps, pcts, npt);
-	if (max_fan_manual || fan_iface != OMEN_FAN_IF_VICTUS_S || !fan_tbl_valid) {
+	if (max_fan_manual) {
 		mutex_unlock(&fan_lock);
 		fan_persist_save();
 		return count;
